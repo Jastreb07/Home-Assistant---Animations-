@@ -1,207 +1,86 @@
 blueprint:
-  name: Flurlicht – kombiniert (Aqara P2 + SONOFF) mit Reset & Recent-Hold + Aqara Lux
+  name: 'Flurlicht – kombiniert (Aqara P2 + SONOFF) mit Reset & Recent-Hold'
   description: >
-    Hält das Flurlicht an, solange Aqara P2 oder SONOFF (PIR/mmWave) Präsenz/Bewegung melden,
-    nutzt „recent activity“ zum Halten, unterstützt Nacht/Tag-Helligkeit + Schwellwert über
-    Aqara P2 Lux oder optional externen Lux-Sensor. Optionaler Reset zum sofortigen Ausschalten.
+    'Hält das Flurlicht an, solange Aqara P2 oder SONOFF (PIR/mmWave) Präsenz/Bewegung melden
+    ODER innerhalb eines Haltefensters ("recent activity") zuletzt aktiv waren. Optionaler
+    manueller Reset (input_button / input_boolean) schaltet sofort aus. Mit Tag/Nacht-Helligkeit
+    und optionaler Helligkeitsschwelle (Lux).'
   domain: automation
+  source_url: 'https://example.local/blueprints/flur_licht_kombiniert_reset.yaml'
 
   input:
     aqara_sensors:
-      name: Aqara Sensor(en)
+      name: 'Aqara Sensor(en)'
+      description: 'Wähle deinen Aqara P2 (motion/presence) Binary-Sensor(en).'
       selector:
         entity:
           domain: binary_sensor
           multiple: true
 
     sonoff_sensors:
-      name: SONOFF Sensor(en)
+      name: 'SONOFF Sensor(en)'
+      description: 'Wähle SONOFF SNZB-06P (presence) oder SNZB-03 (motion) Binary-Sensor(en).'
       selector:
         entity:
           domain: binary_sensor
           multiple: true
 
-    aqara_lux:
-      name: Aqara P2 Lux Sensor
-      description: Das ist der eingebaute Helligkeitssensor des Aqara P2 (Device Class: illuminance).
-      selector:
-        entity:
-          domain: sensor
-          device_class: illuminance
-
     light_target:
-      name: Licht(e) im Flur
+      name: 'Licht(e) im Flur'
       selector:
         target:
           entity:
             domain: light
 
     off_grace:
-      name: Nachlaufzeit bis AUS (Sekunden)
+      name: 'Nachlaufzeit bis AUS (Sekunden)'
+      description: 'Zeit, die nach letzter Belegung gewartet wird, bevor ausgeschaltet wird.'
       default: 120
       selector:
         number:
           min: 10
           max: 900
-          step: 5
           unit_of_measurement: s
+          mode: slider
+          step: 5
 
     recent_hold:
-      name: Recent-Activity Haltefenster (Sekunden)
+      name: 'Recent-Activity Haltefenster (Sekunden)'
+      description: 'So lange gilt die letzte Aktivität noch als „belegt“, auch wenn Sensoren bereits „aus“ sind.'
       default: 30
       selector:
         number:
           min: 0
           max: 300
-          step: 5
           unit_of_measurement: s
+          mode: slider
+          step: 5
 
     night_start_hour:
-      name: Nachtmodus Start (0–23)
+      name: 'Nachtmodus Start (Stunde 0–23)'
       default: 23
       selector:
         number:
           min: 0
           max: 23
+          mode: box
 
     night_end_hour:
-      name: Nachtmodus Ende (0–23)
+      name: 'Nachtmodus Ende (Stunde 0–23)'
       default: 6
       selector:
         number:
           min: 0
           max: 23
+          mode: box
 
     day_brightness:
-      name: Helligkeit Tag (%)
+      name: 'Helligkeit Tag (%)'
       default: 80
       selector:
         number:
           min: 1
           max: 100
+          mode: slider
 
     night_brightness:
-      name: Helligkeit Nacht (%)
-      default: 25
-      selector:
-        number:
-          min: 1
-          max: 100
-
-    external_lux:
-      name: (Optional) Externer Lux Sensor
-      default:
-      selector:
-        entity:
-          domain: sensor
-          device_class: illuminance
-
-    lux_threshold:
-      name: Lux Schwellwert zum Einschalten
-      default: 50
-      selector:
-        number:
-          min: 1
-          max: 2000
-
-    reset_helper:
-      name: (Optional) Reset-Button / Reset-Schalter
-      default:
-      selector:
-        entity: {}
-
-mode: restart
-max_exceeded: silent
-
-variables:
-  aqara: !input aqara_sensors
-  sonoff: !input sonoff_sensors
-  hold: !input recent_hold
-  off_grace: !input off_grace
-  lux_p2: !input aqara_lux
-  lux_ext: !input external_lux
-  lux_thresh: !input lux_threshold
-
-  # kombiniertes Lux (nimm kleineres, falls beide vorhanden)
-  lux_value: >
-    {% set p2 = states(lux_p2)|float(99999) %}
-    {% set ext = states(lux_ext)|float(99999) if lux_ext else 99999 %}
-    {{ [p2, ext] | min }}
-
-  is_dark: >
-    {{ lux_value < lux_thresh|float }}
-
-  # Day/Night
-  day_bri: !input day_brightness
-  night_bri: !input night_brightness
-  night_start: !input night_start_hour
-  night_end: !input night_end_hour
-  is_night: >
-    {% set h = now().hour %}
-    {% if night_start > night_end %}
-      {{ h >= night_start or h < night_end }}
-    {% else %}
-      {{ night_start <= h < night_end }}
-    {% endif %}
-
-  brightness: >
-    {{ night_bri if is_night else day_bri }}
-
-  # Presence + recent hold
-  any_on: >
-    {{ (expand(aqara)|selectattr('state','eq','on')|list|count > 0) or
-       (expand(sonoff)|selectattr('state','eq','on')|list|count > 0) }}
-
-  recent: >
-    {% set times = (expand(aqara)+expand(sonoff))|map(attribute='last_changed')|map('as_timestamp')|list %}
-    {% set last = (times|max) if times else 0 %}
-    {{ (now().timestamp() - last) <= hold }}
-
-  occupied: >
-    {{ any_on or recent }}
-
-trigger:
-  - platform: state
-    entity_id: !input aqara_sensors
-  - platform: state
-    entity_id: !input sonoff_sensors
-  - platform: state
-    entity_id: !input reset_helper
-
-condition: []
-
-action:
-  - choose:
-      - conditions:
-          - condition: template
-            value_template: "{{ occupied }}"
-          - condition: template
-            value_template: "{{ is_dark }}"
-        sequence:
-          - service: light.turn_on
-            target: !input light_target
-            data:
-              brightness_pct: "{{ brightness|int }}"
-          - wait_template: >
-              {% set times = (expand(aqara)+expand(sonoff))|map(attribute='state')|list %}
-              {% set any_is_on = 'on' in times %}
-              {% if any_is_on %}
-                false
-              {% else %}
-                {% set t = (expand(aqara)+expand(sonoff))|map(attribute='last_changed')|map('as_timestamp')|list %}
-                {% set last = (t|max) if t else 0 %}
-                {{ (now().timestamp() - last) > hold }}
-              {% endif %}
-            timeout:
-              seconds: "{{ off_grace }}"
-            continue_on_timeout: true
-          - condition: template
-            value_template: "{{ not occupied }}"
-          - service: light.turn_off
-            target: !input light_target
-      - conditions:
-          - condition: template
-            value_template: "{{ trigger.entity_id == (reset_helper or '') }}"
-        sequence:
-          - service: light.turn_off
-            target: !input light_target
