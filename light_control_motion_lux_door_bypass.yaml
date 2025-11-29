@@ -21,16 +21,15 @@ blueprint:
 
     motion_sensors:
       name: Bewegungsmelder
-      description: Wähle alle Bewegungsmelder für diese Szene.
+      description: Bewegungsmelder für diese Szene.
       selector:
         entity:
           domain: binary_sensor
           device_class: motion
-          multiple: true
 
     lux_sensor:
-      name: Lux-Sensor
-      description: Sensor für die Helligkeit (Lux).
+      name: Lux-Sensor (optional)
+      description: Sensor für die Helligkeit (Lux). Leer lassen = Lux wird ignoriert.
       default: null
       selector:
         entity:
@@ -49,46 +48,43 @@ blueprint:
           mode: box
 
     door_bypass_on:
-      name: Türsensoren – ON-Bypass
+      name: Türsensor – ON-Bypass
       description: >
-        Wenn einer dieser Türsensoren "offen" ist, werden die Lichter eingeschaltet
-        und bleiben an, unabhängig von Lux und Bewegung.
-      default: []
+        Wenn diese Tür "offen" ist, werden die Lichter eingeschaltet
+        und bleiben an, unabhängig von Lux und Bewegung. Leer lassen = nicht benutzt.
+      default: null
       selector:
         entity:
           domain: binary_sensor
           device_class:
             - door
             - opening
-          multiple: true
 
     door_bypass_off:
-      name: Türsensoren – OFF-Bypass
+      name: Türsensor – OFF-Bypass
       description: >
-        Wenn einer dieser Türsensoren "offen" ist, werden die Lichter NICHT automatisch ausgeschaltet
-        (z.B. Tür auf = bleib an).
-      default: []
+        Wenn diese Tür "offen" ist, werden die Lichter NICHT automatisch ausgeschaltet.
+        (z.B. Tür auf = bleib an). Leer lassen = nicht benutzt.
+      default: null
       selector:
         entity:
           domain: binary_sensor
           device_class:
             - door
             - opening
-          multiple: true
 
     door_bypass_automation:
-      name: Türsensoren – Automation-Bypass
+      name: Türsensor – Automation-Bypass
       description: >
-        Wenn einer dieser Türsensoren "offen" ist, wird die komplette Automation ignoriert.
-        Es erfolgt weder Auto-An noch Auto-Aus.
-      default: []
+        Wenn diese Tür "offen" ist, wird die komplette Automation ignoriert.
+        Es erfolgt weder Auto-An noch Auto-Aus. Leer lassen = nicht benutzt.
+      default: null
       selector:
         entity:
           domain: binary_sensor
           device_class:
             - door
             - opening
-          multiple: true
 
     off_delay:
       name: Ausschaltverzögerung
@@ -144,10 +140,8 @@ action:
     alias: "Automation-Bypass aktiv?"
     value_template: >
       {{
-        expand(door_bypass_automation)
-          | selectattr('state', 'eq', 'on')
-          | list
-          | count == 0
+        not door_bypass_automation
+        or is_state(door_bypass_automation, 'off')
       }}
 
   - choose:
@@ -163,31 +157,31 @@ action:
                     and trigger.to_state is not none
                     and trigger.to_state.state == 'on'
                     and (
-                      trigger.entity_id in motion_sensors
-                      or trigger.entity_id in door_bypass_on
+                      trigger.entity_id == motion_sensors
+                      or (door_bypass_on and trigger.entity_id == door_bypass_on)
                     )
                   )
                   or trigger.platform == 'homeassistant'
                 )
               }}
-          - condition: or
-            conditions:
-              # Lux Sensor nicht definiert -> kein Lux-Check
-              - condition: template
-                value_template: "{{ lux_sensor is none }}"
-              # Lux unter Mindestwert
-              - condition: numeric_state
-                entity_id: !input lux_sensor
-                below: !input min_lux
-              # ON-Bypass aktiv -> Lux egal
-              - condition: template
-                value_template: >
-                  {{
-                    expand(door_bypass_on)
-                      | selectattr('state', 'eq', 'on')
-                      | list
-                      | count > 0
-                  }}
+          - condition: template
+            alias: "Lux-Bedingung oder ON-Bypass erfüllt"
+            value_template: >
+              {% set on_bypass_active = door_bypass_on and is_state(door_bypass_on, 'on') %}
+              {% if on_bypass_active %}
+                {{ true }}
+              {% else %}
+                {% if not lux_sensor %}
+                  {{ true }}
+                {% else %}
+                  {% set st = states(lux_sensor) %}
+                  {% if st in ['unknown', 'unavailable', 'none', ''] %}
+                    {{ false }}
+                  {% else %}
+                    {{ (st | float(999999)) < min_lux }}
+                  {% endif %}
+                {% endif %}
+              {% endif %}
         sequence:
           - service: homeassistant.turn_on
             target: !input target_lights
@@ -199,42 +193,27 @@ action:
             value_template: >
               {{
                 trigger.platform == 'state'
-                and trigger.entity_id in motion_sensors
+                and trigger.entity_id == motion_sensors
                 and trigger.to_state is not none
                 and trigger.to_state.state == 'off'
               }}
         sequence:
           - delay: "{{ off_delay }}"
 
-          # Nur ausschalten, wenn wirklich KEIN Bewegungsmelder mehr "on" ist
-          - condition: template
-            value_template: >
-              {{
-                expand(motion_sensors)
-                  | selectattr('state', 'eq', 'on')
-                  | list
-                  | count == 0
-              }}
+          # Sicherstellen, dass der Bewegungsmelder immer noch "off" ist
+          - condition: state
+            entity_id: !input motion_sensors
+            state: "off"
 
-          # ON-Bypass: wenn eine Tür aus der ON-Liste offen ist -> NICHT ausschalten
+          # ON-Bypass: wenn Tür offen -> NICHT ausschalten
           - condition: template
             value_template: >
-              {{
-                expand(door_bypass_on)
-                  | selectattr('state', 'eq', 'on')
-                  | list
-                  | count == 0
-              }}
+              {{ not door_bypass_on or is_state(door_bypass_on, 'off') }}
 
-          # OFF-Bypass: wenn eine Tür aus der OFF-Liste offen ist -> NICHT ausschalten
+          # OFF-Bypass: wenn Tür offen -> NICHT ausschalten
           - condition: template
             value_template: >
-              {{
-                expand(door_bypass_off)
-                  | selectattr('state', 'eq', 'on')
-                  | list
-                  | count == 0
-              }}
+              {{ not door_bypass_off or is_state(door_bypass_off, 'off') }}
 
           - service: homeassistant.turn_off
             target: !input target_lights
